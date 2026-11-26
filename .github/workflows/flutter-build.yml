@@ -3019,7 +3019,7 @@ jobs:
           if [ "$GK_VARIANT" = "admin" ]; then
             for f in rustdesk-*.AppImage; do sudo mv "$f" "rustdesk-admin-gokiebox-${f#rustdesk-}"; done
           fi
-          sha256sum rustdesk-*.AppImage | tee sha256sums-appimage.txt
+          sha256sum rustdesk-*.AppImage | sudo tee sha256sums-appimage.txt
 
       - name: Gokiebox - upload appimage
         if: env.UPLOAD_ARTIFACT == 'true'
