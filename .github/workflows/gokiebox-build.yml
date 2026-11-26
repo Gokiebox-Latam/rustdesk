@@ -1,4 +1,4 @@
-name: Gokiebox Windows build
+name: Gokiebox build (Windows + Linux)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,14 @@ on:
           - client
           - admin
         default: client
+      platforms:
+        description: "all, windows or linux (x86_64)"
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+        default: all
       tag:
         description: "Release tag"
         type: string
@@ -27,3 +35,4 @@ jobs:
       upload-artifact: true
       upload-tag: ${{ inputs.tag }}
       gk-variant: ${{ inputs.variant }}
+      gk-platforms: ${{ inputs.platforms }}
