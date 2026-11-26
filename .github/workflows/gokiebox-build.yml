@@ -2,6 +2,18 @@ name: Gokiebox Windows build
 
 on:
   workflow_dispatch:
+    inputs:
+      variant:
+        description: "client = customers (incoming only, click approval); admin = internal, private repo only"
+        type: choice
+        options:
+          - client
+          - admin
+        default: client
+      tag:
+        description: "Release tag"
+        type: string
+        default: "gokiebox-1.5.3-c1"
 
 permissions:
   contents: write
@@ -13,4 +25,5 @@ jobs:
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: "gokiebox-1.5.3"
+      upload-tag: ${{ inputs.tag }}
+      gk-variant: ${{ inputs.variant }}

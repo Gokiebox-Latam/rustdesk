@@ -2506,7 +2506,24 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
     ThrottledInterval::new(i)
 }
 
+/// Gokiebox customer build (compiled with `GK_VARIANT=client`): customers only receive
+/// connections, approved by a click on their side, never with a password.
+fn apply_gokiebox_client_settings() {
+    if option_env!("GK_VARIANT") != Some("client") {
+        return;
+    }
+    config::OVERWRITE_SETTINGS
+        .write()
+        .unwrap()
+        .insert("approve-mode".to_owned(), "click".to_owned());
+    config::HARD_SETTINGS
+        .write()
+        .unwrap()
+        .insert("conn-type".to_owned(), "incoming".to_owned());
+}
+
 pub fn load_custom_client() {
+    apply_gokiebox_client_settings();
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());
@@ -2605,6 +2622,7 @@ pub fn get_dst_align_rgba() -> usize {
 }
 
 pub fn read_custom_client(config: &str) {
+    apply_gokiebox_client_settings();
     let Ok(data) = decode64(config) else {
         log::error!("Failed to decode custom client config");
         return;

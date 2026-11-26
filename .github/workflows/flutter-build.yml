@@ -12,6 +12,11 @@ on:
       publish-update-metadata:
         type: boolean
         default: false
+      # Gokiebox: "client" (customers: incoming only, click approval) or "admin" (internal,
+      # carries GK_ADMIN_TOKEN; only ever built in the private repo).
+      gk-variant:
+        type: string
+        default: "client"
 
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
@@ -61,6 +66,7 @@ env:
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   PUBLISH_UPDATE_METADATA: "${{ inputs.publish-update-metadata }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
+  GK_VARIANT: "${{ inputs.gk-variant }}"
 
 jobs:
   validate-update-metadata-keys:
@@ -192,6 +198,23 @@ jobs:
           grep -n 'RENDEZVOUS_SERVERS: &\[&str\] = &\["remote.gokiebox.com"\];' "$f"
           grep -n 'RS_PUB_KEY: &str = "fq5qfQ3QJnt7vDpFoxfN+13RoaGa5+Mz67FAErbqHek=";' "$f"
           if grep -n 'rs-ny.rustdesk.com\|OeVuKk5nlHiXp' "$f"; then echo "old server still present"; exit 1; fi
+
+      - name: Gokiebox - check build variant
+        shell: bash
+        env:
+          GK_TOKEN_SET: ${{ secrets.GK_ADMIN_TOKEN != '' }}
+          GK_REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          echo "variant=$GK_VARIANT repo_private=$GK_REPO_PRIVATE token_set=$GK_TOKEN_SET"
+          case "$GK_VARIANT" in
+            client) ;;
+            admin)
+              if [ "$GK_REPO_PRIVATE" != "true" ]; then echo "admin builds only in the private repo"; exit 1; fi
+              if [ "$GK_TOKEN_SET" != "true" ]; then echo "GK_ADMIN_TOKEN secret is missing"; exit 1; fi
+              ;;
+            *) echo "unknown variant"; exit 1 ;;
+          esac
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -330,6 +353,8 @@ jobs:
         run: echo "SODIUM_LIB_DIR=$VCPKG_ROOT/installed/${{ matrix.job.vcpkg-triplet }}/lib" >> "$GITHUB_ENV"
 
       - name: Build rustdesk
+        env:
+          GK_ADMIN_TOKEN: ${{ inputs.gk-variant == 'admin' && secrets.GK_ADMIN_TOKEN || '' }}
         run: |
           # Windows: build RustDesk
           # --hwcodec is shared by all Windows targets; per-target extras (e.g. --vram) come from the matrix
@@ -369,6 +394,25 @@ jobs:
           } catch {
               Write-Host "Ingore the printer driver error."
           }
+
+      - name: Gokiebox - verify librustdesk.dll
+        shell: bash
+        env:
+          GK_ADMIN_TOKEN: ${{ inputs.gk-variant == 'admin' && secrets.GK_ADMIN_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          dll=./rustdesk/librustdesk.dll
+          n=$(grep -a -c -F 'remote.gokiebox.com' "$dll" || true)
+          echo "remote.gokiebox.com matches: $n"
+          [ "$n" -gt 0 ]
+          if [ "$GK_VARIANT" = "admin" ]; then
+            t=$(grep -a -c -F "$GK_ADMIN_TOKEN" "$dll" || true)
+            echo "admin token matches: $t"
+            [ "$t" -gt 0 ]
+          else
+            [ -z "$GK_ADMIN_TOKEN" ]
+            echo "client build: no admin token in env"
+          fi
 
       - name: Run the Rust tests
         # x86_64 only: the tests are the same code on arm64, and that runner is the slow one.
@@ -567,15 +611,40 @@ jobs:
           path: ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.msi
           if-no-files-found: error
 
+      - name: Gokiebox - name admin installers
+        if: env.UPLOAD_ARTIFACT == 'true' && inputs.gk-variant == 'admin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd SignOutput
+          for f in rustdesk-*; do mv "$f" "rustdesk-admin-gokiebox-${f#rustdesk-}"; done
+          ls -l
+
+      - name: Gokiebox - sha256
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: bash
+        run: sha256sum SignOutput/* | tee SignOutput/sha256sums.txt
+
+      - name: Gokiebox - upload installers
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gokiebox-${{ inputs.gk-variant }}-installers
+          path: ./SignOutput
+          if-no-files-found: error
+
       - name: Publish Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
-        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA != 'true'
+        # An admin build never goes to a release of a public repo.
+        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA != 'true' && (inputs.gk-variant != 'admin' || github.event.repository.private)
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
+          name: ${{ inputs.gk-variant == 'admin' && format('RustDesk Admin Gokiebox {0}', env.VERSION) || format('RustDesk Gokiebox {0} (clientes)', env.VERSION) }}
           files: |
             ./SignOutput/rustdesk-*.msi
             ./SignOutput/rustdesk-*.exe
+            ./SignOutput/sha256sums.txt
 
   # The fallback for the flutter version, we use Sciter for 32bit Windows.
   build-for-windows-sciter:

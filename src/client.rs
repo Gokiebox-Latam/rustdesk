@@ -177,6 +177,21 @@ lazy_static::lazy_static! {
 
 const PUBLIC_SERVER: &str = "public";
 
+/// Gokiebox admin build: the token hbbs requires to let a connection start, compiled in from
+/// the `GK_ADMIN_TOKEN` environment variable. Every other build has none.
+#[inline]
+fn gk_admin_token() -> Option<&'static str> {
+    option_env!("GK_ADMIN_TOKEN").filter(|t| !t.is_empty())
+}
+
+/// The admin token, only for our own hbbs: when the rendezvous key is the built-in Gokiebox
+/// public key. The key itself keeps verifying the server (key exchange, signed_id_pk); the
+/// token is only ever sent over a stream that this key's signed key exchange has encrypted.
+#[inline]
+fn gk_admin_token_for(key: &str) -> Option<&'static str> {
+    gk_admin_token().filter(|_| key == config::RS_PUB_KEY)
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn get_key_state(key: enigo::Key) -> bool {
     use enigo::KeyboardControllable;
@@ -860,6 +875,7 @@ impl Client {
 
         let switch_code = interface.get_switch_code();
         let legacy_secure = !key.is_empty() && (!token.is_empty() || !switch_code.is_empty());
+        let admin_token = gk_admin_token_for(&key);
         let carries_offer = webrtc_offerer.as_ref().and_then(|g| g.stream()).is_some();
         // Counted from before the key exchange, so the exchange spends the UDP NAT test's own
         // wait rather than replacing it: the test runs beside both.
@@ -886,7 +902,12 @@ impl Client {
                 }
             }
         }
-        if !exchanged && legacy_secure {
+        if !exchanged && admin_token.is_some() {
+            // Gokiebox admin: the token never goes out in the clear.
+            secure_tcp_required(&mut socket, &key)
+                .await
+                .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
+        } else if !exchanged && legacy_secure {
             secure_tcp(&mut socket, &key)
                 .await
                 .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
@@ -956,7 +977,7 @@ impl Client {
             id: peer.to_owned(),
             token: token.to_owned(),
             nat_type: nat_type.into(),
-            licence_key: key.to_owned(),
+            licence_key: admin_token.unwrap_or(&key).to_owned(),
             conn_type: conn_type.into(),
             version: crate::VERSION.to_owned(),
             udp_port: udp_nat_port as _,
@@ -1800,6 +1821,7 @@ impl Client {
         let mut succeed = false;
         let mut uuid = "".to_owned();
         let mut ipv4 = true;
+        let admin_token = gk_admin_token_for(key);
 
         for i in 1..=3 {
             // use different socket due to current hbbs implementation requiring different nat address for each attempt
@@ -1807,7 +1829,10 @@ impl Client {
                 .await
                 .with_context(|| "Failed to connect to rendezvous server")?;
 
-            if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+            if admin_token.is_some() {
+                // Gokiebox admin: the token never goes out in the clear.
+                secure_tcp_required(&mut socket, key).await?;
+            } else if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
                 secure_tcp(&mut socket, key).await?;
             }
 
@@ -1829,6 +1854,8 @@ impl Client {
                 relay_server: relay_server.clone(),
                 secure,
                 switch_code: switch_code.to_owned(),
+                // Gokiebox admin only; empty (as upstream) in every other build.
+                licence_key: admin_token.unwrap_or_default().to_owned(),
                 ..Default::default()
             });
             socket.send(&msg_out).await?;
